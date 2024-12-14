@@ -9,17 +9,6 @@
     ObjC.import('CoreServices');
 
     // At the top level, after imports
-    const OUTPUT_FORMAT = {
-        LINE: '-line',
-        JSON: '-json',
-        CSV: '-csv',
-        COLUMN: '-column',
-        HTML: '-html',
-        INSERT: '-insert',
-        LIST: '-list'
-    };
-
-    // Valid output formats as static array
     const VALID_OUTPUT_FORMATS = [
         'json',  // Default
         'line',
@@ -50,7 +39,7 @@
 
         // Add output format getter
         static get OUTPUT_FORMAT() {
-            return OUTPUT_FORMAT;
+            return VALID_OUTPUT_FORMATS;
         }
 
         // Add valid formats getter
@@ -105,40 +94,14 @@
             return new Date(timestamp * 1000).toISOString();
         }
 
-        static formatOutput(data, format = OUTPUT_FORMAT.JSON) {
-            // If not JSON format, return raw data as tab-delimited rows with headers
-            if (format !== OUTPUT_FORMAT.JSON) {
-                if (!data || !data.data || !data.data.messages) return '';
-                
-                // Define headers
-                const headers = [
-                    'GUID',
-                    'MESSAGE',
-                    'DATE',
-                    'SERVICE',
-                    'SENDER',
-                    'RECEIVER'
-                ].join('\t');
-
-                // Format data rows
-                const rows = data.data.messages.map(msg => {
-                    const m = msg.message;
-                    return [
-                        m.guid,
-                        m.content.text,
-                        m.timestamps.date,
-                        m.communication.channel.service,
-                        m.communication.sender.phone_number || m.communication.sender.email || '',
-                        m.communication.receiver.phone_number || m.communication.receiver.email || ''
-                    ].join('\t');
-                });
-
-                // Combine headers and rows
-                return [headers, ...rows].join('\n');
+        static formatOutput(data, format = 'json') {
+            // Default to JSON
+            if (!format || format === 'json') {
+                return JSON.stringify(data, null, 2);
             }
-
-            // Return formatted JSON
-            return JSON.stringify(data, null, 2);
+            
+            // Otherwise pass format directly to sqlite
+            return data;
         }
     }
 
@@ -192,11 +155,13 @@
             this.pipe = $.NSPipe.pipe;
         }
 
-        query(sql, format = OUTPUT_FORMAT.JSON) {
+        query(sql, format = 'json') {
             try {
                 const task = $.NSTask.alloc.init;
                 task.launchPath = MsgIntelUtils.SQLITE_BIN;
-                task.arguments = [this.dbPath, format, sql];
+                
+                // Pass format directly to sqlite
+                task.arguments = [this.dbPath, `-${format}`, sql];
                 
                 const pipe = $.NSPipe.pipe;
                 task.standardOutput = pipe;
@@ -206,7 +171,8 @@
                 const data = pipe.fileHandleForReading.readDataToEndOfFile;
                 const output = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js;
                 
-                return format === OUTPUT_FORMAT.JSON ? JSON.parse(output) : output;
+                // Only parse if JSON
+                return format === 'json' ? JSON.parse(output) : output;
             } catch(e) {
                 return null;
             }
@@ -231,7 +197,7 @@
             };
         }
 
-        getMessages(format = OUTPUT_FORMAT.JSON) {
+        getMessages(format = 'json') {
             const sql = `SELECT 
                 m.ROWID, m.guid, m.text, m.service, m.handle_id, 
                 m.is_from_me, m.destination_caller_id,
@@ -250,15 +216,14 @@
             LEFT JOIN chat c ON cmj.chat_id = c.ROWID
             WHERE m.text IS NOT NULL;`;
 
-            const results = this.query(sql);
-            
-            if (format !== OUTPUT_FORMAT.JSON) {
-                return results;
-            } 
+            // For non-JSON formats, return raw sqlite output
+            if (format !== 'json') {
+                return this.query(sql, format);
+            }
 
-            if (!results) return [];
+            const messages = this.query(sql);
+            if (!messages) return { data: { messages: [] }};
 
-            
             return {
                 job: {
                     job_id: `JOB-${$.NSProcessInfo.processInfo.processIdentifier}`,
@@ -275,7 +240,7 @@
                     }
                 },
                 data: {
-                    messages: results ? results.map(msg => ({
+                    messages: messages.map(msg => ({
                         message: {
                             guid: msg.guid,
                             timestamps: {
@@ -356,7 +321,7 @@
                                 ck_record_change_tag: msg.ck_record_change_tag
                             }
                         }
-                    })) : []
+                    }))
                 }
             };
         }
@@ -388,7 +353,7 @@
             };
         }
 
-        getAttachments(format = OUTPUT_FORMAT.JSON) {
+        getAttachments(format = 'json') {
             const sql = `SELECT 
                 a.ROWID,
                 a.guid,
@@ -421,13 +386,13 @@
             LEFT JOIN message m ON maj.message_id = m.ROWID
             ORDER BY a.ROWID ASC;`;
 
-            const results = this.query(sql, format);
-
-            if (format !== OUTPUT_FORMAT.JSON) {
-                return results;
+            // For non-JSON formats, return raw sqlite output
+            if (format !== 'json') {
+                return this.query(sql, format);
             }
 
-            if (!results) return [];
+            const attachments = this.query(sql);
+            if (!attachments) return { data: { attachments: [] }};
 
             return {
                 job: {
@@ -444,41 +409,43 @@
                         type: "discover"
                     }
                 },
-                attachments: results.map(att => ({
-                    attachment: {
-                        guid: att.guid,
-                        created_date: MsgIntelUtils.convertAppleDate(att.created_date),
-                        metadata: {
-                            filename: att.filename,
-                            mime_type: att.mime_type,
-                            uti: att.uti,
-                            transfer_name: att.transfer_name,
-                            total_bytes: att.total_bytes
-                        },
-                        status: {
-                            transfer_state: att.transfer_state,
-                            is_outgoing: att.is_outgoing,
-                            is_sticker: att.is_sticker,
-                            hide_attachment: att.hide_attachment,
-                            is_commsafety_sensitive: att.is_commsafety_sensitive,
-                            ck_sync_state: att.ck_sync_state
-                        },
-                        message: {
-                            guid: att.guid.substring(att.guid.indexOf('_', att.guid.indexOf('_') + 1) + 1),
-                            is_from_me: att.is_from_me,
-                            communication: MsgIntelUtils.mapCommunication(att, 
-                                this.handles.byRowId.get(att.handle_id),
-                                this.handles.byId.get(att.destination_caller_id)),
-                            state: {
-                                is_delivered: Boolean(att.is_delivered),
-                                is_read: Boolean(att.is_read),
-                                is_sent: Boolean(att.is_sent),
-                                is_spam: Boolean(att.is_spam),
-                                is_kt_verified: Boolean(att.is_kt_verified)
+                data: {
+                    attachments: attachments.map(att => ({
+                        attachment: {
+                            guid: att.guid,
+                            created_date: MsgIntelUtils.convertAppleDate(att.created_date),
+                            metadata: {
+                                filename: att.filename,
+                                mime_type: att.mime_type,
+                                uti: att.uti,
+                                transfer_name: att.transfer_name,
+                                total_bytes: att.total_bytes
+                            },
+                            status: {
+                                transfer_state: att.transfer_state,
+                                is_outgoing: att.is_outgoing,
+                                is_sticker: att.is_sticker,
+                                hide_attachment: att.hide_attachment,
+                                is_commsafety_sensitive: att.is_commsafety_sensitive,
+                                ck_sync_state: att.ck_sync_state
+                            },
+                            message: {
+                                guid: att.guid.substring(att.guid.indexOf('_', att.guid.indexOf('_') + 1) + 1),
+                                is_from_me: att.is_from_me,
+                                communication: MsgIntelUtils.mapCommunication(att, 
+                                    this.handles.byRowId.get(att.handle_id),
+                                    this.handles.byId.get(att.destination_caller_id)),
+                                state: {
+                                    is_delivered: Boolean(att.is_delivered),
+                                    is_read: Boolean(att.is_read),
+                                    is_sent: Boolean(att.is_sent),
+                                    is_spam: Boolean(att.is_spam),
+                                    is_kt_verified: Boolean(att.is_kt_verified)
+                                }
                             }
                         }
-                    }
-                }))
+                    }))
+                }
             };
         }
     }
@@ -499,7 +466,7 @@
             };
         }
 
-        searchAll(inputStr, format = OUTPUT_FORMAT.JSON) {
+        searchAll(inputStr, format = 'json') {
             const escapedInputStr = inputStr.replace(/_/g, '\\_').replace(/%/g, '\\%');
 
             const msgSql = `SELECT 
@@ -524,9 +491,15 @@
             OR h.id LIKE '%${escapedInputStr}%'
             OR m.destination_caller_id LIKE '%${escapedInputStr}%';`;
 
-            const messages = this.query(msgSql);
+            // For non-JSON formats, return raw sqlite output
+            if (format !== 'json') {
+                return this.query(msgSql, format);
+            }
 
-            const output = {
+            const messages = this.query(msgSql);
+            if (!messages) return { data: { messages: [] }};
+
+            return {
                 job: {
                     job_id: `JOB-${$.NSProcessInfo.processInfo.processIdentifier}`,
                     user: MsgIntelUtils.USER_INFO.username,
@@ -627,8 +600,6 @@
                     }))
                 }
             };
-
-            return MsgIntelUtils.formatOutput(output, format);
         }
 
         searchByDate(startDate, endDate) {
@@ -806,7 +777,7 @@
             };
         }
 
-        getHiddenMessages(format = OUTPUT_FORMAT.JSON) {
+        getHiddenMessages(format = 'json') {
             const sql = `SELECT 
                 -- Timeline Context
                 crm.delete_date,
@@ -841,11 +812,13 @@
             WHERE m.text IS NOT NULL
             ORDER BY crm.delete_date DESC;`;
 
-            const results = this.query(sql, format);
-
-            if (format !== OUTPUT_FORMAT.JSON) {
-                return results;
+            // For non-JSON formats, return raw sqlite output
+            if (format !== 'json') {
+                return this.query(sql, format);
             }
+
+            const messages = this.query(sql);
+            if (!messages) return { data: { hidden_messages: [] }};
 
             return {
                 job: {
@@ -863,7 +836,7 @@
                     }
                 },
                 data: {
-                    hidden_messages: results.map(msg => ({
+                    hidden_messages: messages.map(msg => ({
                         message: {
                             guid: msg.guid,
                             is_from_me: msg.is_from_me,
@@ -912,7 +885,7 @@
             };
         }
 
-        getContacts(format = OUTPUT_FORMAT.JSON) {
+        getContacts(format = 'json') {
             const sql = `
                 SELECT 
                     h.ROWID,
@@ -943,9 +916,9 @@
                 GROUP BY h.ROWID
                 ORDER BY h.id;`;
 
-            const results = this.query(sql, OUTPUT_FORMAT.JSON);
+            const results = this.query(sql, format);
 
-            if (OUTPUT_FORMAT.JSON !== OUTPUT_FORMAT.JSON) {
+            if (format !== 'json') {
                 return results;
             }
 
@@ -1105,7 +1078,7 @@ Options:
     // Main execution
     if (typeof $ !== 'undefined') {
         const options = parseArgs();
-        const format = options.output || OUTPUT_FORMAT.JSON;
+        const format = options.output || 'json';
         
         // Add drafts handler
         if (options.drafts) {
@@ -1126,7 +1099,13 @@ Options:
                 
                 if (options.search) {
                     const searchResults = search.searchAll(options.search, format);
-                    console.log(searchResults);
+                    // For non-JSON formats, return raw output
+                    if (format !== 'json') {
+                        console.log(searchResults);
+                    } else {
+                        // For JSON (default), stringify the results
+                        console.log(JSON.stringify(searchResults, null, 2));
+                    }
                     return;
                 }
 
@@ -1152,7 +1131,7 @@ Options:
                     }
                 };
                 
-                if (format !== OUTPUT_FORMAT.JSON) {
+                if (format !== VALID_OUTPUT_FORMATS[0]) {
                     let result = '';
                     for (const [key, value] of Object.entries(results.data)) {
                         if (value) result += value + '\n';
@@ -1167,7 +1146,7 @@ Options:
         if (options.hidden) {
             const hidden = new HiddenMessages();
             const results = hidden.getHiddenMessages(format);
-            if (format !== OUTPUT_FORMAT.JSON) {
+            if (format !== VALID_OUTPUT_FORMATS[0]) {
                 console.log(results);
             } else {
                 console.log(JSON.stringify(results, null, 2));
