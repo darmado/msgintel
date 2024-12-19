@@ -1,6 +1,28 @@
-// Script Name: msgIntel.js
-// MITRE ATT&CK Technique: T1005 - Data from Local System
-// Platform: macOS
+/**
+ * Script Name: msgIntel.js
+ * Description: Extracts message data from macOS Messages app databases
+ * MITRE ATT&CK Technique: T1005 - Data from Local System
+ * Platform: macOS
+ * 
+ * Author: Daniel Acevedo
+ * Date: 2024DEC19
+ * Version: 0.8.0
+ * License: Apache 2.0
+ * 
+ * Copyright 2024 Daniel Acevedo
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 (() => {
     'use strict';
@@ -374,13 +396,10 @@
                 m.is_delivered,
                 m.is_read,
                 m.is_sent,
-                m.is_empty,
-                m.is_delayed,
-                m.is_auto_reply,
-                m.is_prepared,
-                m.is_finished,
                 m.is_spam,
-                m.is_kt_verified
+                m.is_kt_verified,
+                m.service,
+                m.version
             FROM attachment a
             LEFT JOIN message_attachment_join maj ON a.ROWID = maj.attachment_id
             LEFT JOIN message m ON maj.message_id = m.ROWID
@@ -414,7 +433,7 @@
                         attachment: {
                             guid: att.guid,
                             created_date: MsgIntelUtils.convertAppleDate(att.created_date),
-                            metadata: {
+                            file_metadata: {
                                 filename: att.filename,
                                 mime_type: att.mime_type,
                                 uti: att.uti,
@@ -426,15 +445,20 @@
                                 is_outgoing: att.is_outgoing,
                                 is_sticker: att.is_sticker,
                                 hide_attachment: att.hide_attachment,
-                                is_commsafety_sensitive: att.is_commsafety_sensitive,
-                                ck_sync_state: att.ck_sync_state
+                                is_commsafety_sensitive: att.is_commsafety_sensitive
                             },
                             message: {
                                 guid: att.guid.substring(att.guid.indexOf('_', att.guid.indexOf('_') + 1) + 1),
-                                is_from_me: att.is_from_me,
-                                communication: MsgIntelUtils.mapCommunication(att, 
-                                    this.handles.byRowId.get(att.handle_id),
-                                    this.handles.byId.get(att.destination_caller_id)),
+                                communication: {
+                                    channel: {
+                                        service: att.service,
+                                        version: att.version,
+                                        is_from_me: att.is_from_me
+                                    },
+                                    ...MsgIntelUtils.mapCommunication(att, 
+                                        this.handles.byRowId.get(att.handle_id),
+                                        this.handles.byId.get(att.destination_caller_id))
+                                },
                                 state: {
                                     is_delivered: Boolean(att.is_delivered),
                                     is_read: Boolean(att.is_read),
@@ -442,6 +466,11 @@
                                     is_spam: Boolean(att.is_spam),
                                     is_kt_verified: Boolean(att.is_kt_verified)
                                 }
+                            },
+                            icloud: {
+                                ck_sync_state: att.ck_sync_state,
+                                ck_record_id: att.ck_record_id,
+                                ck_record_change_tag: att.ck_record_change_tag
                             }
                         }
                     }))
